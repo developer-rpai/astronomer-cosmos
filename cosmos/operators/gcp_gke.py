@@ -40,7 +40,7 @@ class DbtGcpGkeBaseOperator(AbstractDbtBase, GKEStartPodOperator):  # type: igno
     """
 
     template_fields: Sequence[str] = tuple(
-        list(AbstractDbtBase.template_fields) + list(GKEStartPodOperator.template_fields)
+        list(AbstractDbtBase.template_fields) + list(GKEStartPodOperator.template_fields) + ["install_deps"]
     )
 
     intercept_flag = False

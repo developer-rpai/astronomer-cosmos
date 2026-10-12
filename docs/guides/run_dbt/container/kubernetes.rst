@@ -85,6 +85,11 @@ Behavior across versions
 - In Cosmos 1.15.0, Cosmos began setting ``cmds`` to ``["dbt"]`` unconditionally. Because setting the Pod ``cmds`` sets the container ``command`` field, this overrode the image ``ENTRYPOINT`` and also discarded any custom ``cmds`` value (`#2889 <https://github.com/astronomer/astronomer-cosmos/issues/2889>`__).
 - Cosmos 1.15.1 restores the earlier behavior: the image ``ENTRYPOINT`` is preserved by default, a custom ``cmds`` is honored as provided, and ``["dbt"]`` is used as the container command only when set explicitly.
 
+Installing dbt dependencies
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If the dbt project declares dependencies in a non-empty ``packages.yml`` or ``dependencies.yml`` and dependency installation is enabled (the default, controlled by ``ProjectConfig.install_dbt_deps``, ``ExecutionConfig.install_dbt_deps`` or the ``install_deps`` operator argument), Cosmos runs ``dbt deps`` inside the Pod before the main dbt command, using the same profile, target and project directory. To chain the two commands, Cosmos replaces the Pod's ``cmds`` with ``/bin/bash -c``, so the Pod image must provide ``bash`` and the ``dbt`` executable on the ``PATH``. Set ``install_deps`` to ``False`` to keep the previous behavior of running only the dbt command.
+
 Step-by-step instructions
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 

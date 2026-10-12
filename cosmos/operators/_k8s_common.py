@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import inspect
 import re
+import shlex
 from collections.abc import Callable
 from os import PathLike
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import kubernetes.client as k8s
@@ -57,8 +59,9 @@ except ImportError:
 
 
 from cosmos.dbt.parser.output import extract_log_issues
+from cosmos.dbt.project import has_non_empty_dependencies_file
 from cosmos.operators._watcher.base import store_dbt_resource_status_from_log
-from cosmos.operators.base import AbstractDbtBase
+from cosmos.operators.base import AbstractDbtBase, resolve_templated_bool
 
 try:
     from airflow.sdk.bases.operator import BaseOperator  # Airflow 3
@@ -73,6 +76,8 @@ class K8sOperatorProtocol(Protocol):
     cmds: list[str]
     arguments: list[str]
     project_dir: str
+    install_deps: bool | str
+    _has_dependencies_file: bool
     log: Any
     callbacks: Any
 
@@ -94,6 +99,15 @@ def init_k8s_operator(
     initializes both explicitly (no ``super().__init__()`` to avoid MRO conflicts).
     """
     operator.profile_config = profile_config
+
+    # ``install_deps`` is a Cosmos-level argument (mirroring ExecutionMode.LOCAL/VIRTUALENV), so it
+    # is not part of either parent class signature and is segregated here instead. Preserve the raw
+    # value (including Jinja templated strings) so it can be resolved at execution time by
+    # ``_should_install_deps``; skip the filesystem probe when deps are explicitly disabled.
+    if "install_deps" in kwargs:
+        install_deps: bool | str = kwargs.pop("install_deps")
+    else:
+        install_deps = kwargs.get("default_args", {}).get("install_deps", True)
 
     # In PR #1474, we refactored cosmos.operators.base.AbstractDbtBase to remove its inheritance from BaseOperator
     # and eliminated the super().__init__() call. This change was made to resolve conflicts in parent class
@@ -126,6 +140,11 @@ def init_k8s_operator(
 
     AbstractDbtBase.__init__(operator, **base_kwargs)
 
+    operator._has_dependencies_file = install_deps is not False and has_non_empty_dependencies_file(
+        Path(operator.project_dir)
+    )
+    operator.install_deps = install_deps if operator._has_dependencies_file else False
+
     container_resources = operator_kwargs.get("container_resources")
     if isinstance(container_resources, dict):
         operator_kwargs["container_resources"] = k8s.V1ResourceRequirements(**container_resources)
@@ -148,10 +167,31 @@ def _build_env_vars(
     return convert_env_vars(env_vars_dict)  # type: ignore[no-any-return]
 
 
+def _should_install_deps(operator: DbtK8sOperator) -> bool:
+    """Resolve the effective ``install_deps`` flag, normalizing a rendered template string to a bool."""
+    if not getattr(operator, "_has_dependencies_file", False):
+        return False
+    return resolve_templated_bool(getattr(operator, "install_deps", False))
+
+
+def _prepend_dbt_deps(operator: DbtK8sOperator, deps_cmd: list[str]) -> None:
+    """Chain ``dbt deps`` ahead of the pod's main command by wrapping both in a shell invocation.
+
+    The full invocation (``cmds`` + ``arguments``) is folded into a single ``bash -c`` string,
+    mirroring how ``DbtDocsCloudKubernetesOperator`` chains its in-pod upload command.
+    """
+    cmd_parts = [str(part) for part in operator.cmds or []] + [str(part) for part in operator.arguments or []]
+    shell_cmd = f"{shlex.join(deps_cmd)} && {shlex.join(cmd_parts)}"
+    operator.cmds = ["/bin/bash", "-c"]
+    operator.arguments = [shell_cmd]
+
+
 def build_kube_args(operator: DbtK8sOperator, context: Context, cmd_flags: list[str] | None = None) -> None:
     """Build the dbt command, set env vars, and assign the dbt ``arguments`` on the operator.
 
-    ``cmds`` is preserved exactly as supplied by the user and never reassigned here. For the
+    ``cmds`` is preserved exactly as supplied by the user and never reassigned here, unless
+    ``install_deps`` is enabled and the project declares dbt dependencies: in that case ``dbt deps``
+    is chained ahead of the dbt command via ``bash -c`` (see ``_prepend_dbt_deps``). For the
     full behavior (unset ``cmds`` vs. ``["dbt"]`` vs. a custom wrapper, and the ``dbt dbt ...``
     pitfall when the image ``ENTRYPOINT`` is itself ``dbt``), see the "Container command and
     image ENTRYPOINT" section of the Kubernetes execution mode guide:
@@ -163,15 +203,25 @@ def build_kube_args(operator: DbtK8sOperator, context: Context, cmd_flags: list[
     operator.dbt_executable_path = "dbt"
     dbt_cmd, env_vars = operator.build_cmd(context=context, cmd_flags=cmd_flags)
 
+    # Flags shared by the dbt command and a potential `dbt deps` invocation: both need to resolve
+    # the same profile, target and project directory inside the pod.
+    shared_flags: list[str] = []
+
     # Parse ProfileConfig and add additional arguments to the dbt_cmd
     if operator.profile_config:
         if operator.profile_config.profile_name:
-            dbt_cmd.extend(["--profile", operator.profile_config.profile_name])
+            profile_flags = ["--profile", operator.profile_config.profile_name]
+            dbt_cmd.extend(profile_flags)
+            shared_flags.extend(profile_flags)
         if operator.profile_config.target_name:
-            dbt_cmd.extend(["--target", operator.profile_config.target_name])
+            target_flags = ["--target", operator.profile_config.target_name]
+            dbt_cmd.extend(target_flags)
+            shared_flags.extend(target_flags)
 
     if operator.project_dir:
-        dbt_cmd.extend(["--project-dir", str(operator.project_dir)])
+        project_dir_flags = ["--project-dir", str(operator.project_dir)]
+        dbt_cmd.extend(project_dir_flags)
+        shared_flags.extend(project_dir_flags)
 
     operator.env_vars = _build_env_vars(env_vars, operator.env_vars)
 
@@ -182,6 +232,9 @@ def build_kube_args(operator: DbtK8sOperator, context: Context, cmd_flags: list[
         # Preserve any user-supplied cmds (a custom entrypoint/wrapper) verbatim, or leave cmds
         # unset so the image ENTRYPOINT runs; pass the full dbt command (incl. executable) as arguments.
         operator.arguments = dbt_cmd
+
+    if _should_install_deps(operator):
+        _prepend_dbt_deps(operator, [dbt_cmd[0], "deps", *shared_flags])
 
 
 def build_and_run_cmd(

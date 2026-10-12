@@ -23,6 +23,10 @@ Bug Fixes
 
 * Resolve bare folder, package, and node-name roots in graph-operator selectors under ``LoadMode.DBT_MANIFEST`` by matching the node's fqn, so ``<folder>+`` and ``<package>+`` behave like their ``path:`` and ``package:`` equivalents and like ``dbt ls``. Previously the graph selector resolved its root by exact node name only, and bare-identifier matching keyed off the absolute file path. See #2962.
 
+Features
+
+* Support installing dbt dependencies when using ``ExecutionMode.KUBERNETES`` and ``ExecutionMode.GCP_GKE``: when the dbt project declares dependencies in a non-empty ``packages.yml`` or ``dependencies.yml`` and ``install_deps`` is enabled (the default), the pod-based operators now run ``dbt deps`` inside the Pod before the main dbt command, honouring ``ProjectConfig.install_dbt_deps`` and ``ExecutionConfig.install_dbt_deps`` like the local execution modes. See #679.
+
 1.15.1 (2026-08-04)
 -------------------
 

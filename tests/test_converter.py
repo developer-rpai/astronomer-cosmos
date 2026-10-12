@@ -935,10 +935,13 @@ def test_validate_converter_fetches_project_name_from_render_config(
 @pytest.mark.parametrize(
     "execution_mode,operator_args,install_dbt_deps,expected",
     [
-        (ExecutionMode.KUBERNETES, {}, False, None),
+        (ExecutionMode.KUBERNETES, {}, False, False),
+        (ExecutionMode.GCP_GKE, {}, False, False),
         (ExecutionMode.LOCAL, {}, False, False),
         (ExecutionMode.VIRTUALENV, {}, False, False),
         (ExecutionMode.WATCHER, {}, False, False),
+        (ExecutionMode.KUBERNETES, {}, True, True),
+        (ExecutionMode.GCP_GKE, {}, True, True),
         (ExecutionMode.LOCAL, {}, True, True),
         (ExecutionMode.VIRTUALENV, {}, True, True),
         (ExecutionMode.WATCHER, {}, True, True),
@@ -963,7 +966,8 @@ def test_project_config_install_dbt_deps_overrides_operator_args(
     expected,
 ):
     """Tests that the value project_config.install_dbt_deps is used to define operator_args["install_deps"] if
-    execution mode is ExecutionMode.LOCAL, ExecutionMode.VIRTUALENV, or ExecutionMode.WATCHER and operator_args["install_deps"] is not
+    execution mode is ExecutionMode.LOCAL, ExecutionMode.VIRTUALENV, ExecutionMode.WATCHER,
+    ExecutionMode.KUBERNETES or ExecutionMode.GCP_GKE and operator_args["install_deps"] is not
     already defined.
     """
     project_config = ProjectConfig(project_name="fake-project", dbt_project_path="/some/project/path")

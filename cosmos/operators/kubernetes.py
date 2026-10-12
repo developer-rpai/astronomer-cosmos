@@ -38,7 +38,7 @@ class DbtKubernetesBaseOperator(AbstractDbtBase, KubernetesPodOperator):  # type
     """
 
     template_fields: Sequence[str] = tuple(
-        list(AbstractDbtBase.template_fields) + list(KubernetesPodOperator.template_fields)
+        list(AbstractDbtBase.template_fields) + list(KubernetesPodOperator.template_fields) + ["install_deps"]
     )
 
     intercept_flag = False

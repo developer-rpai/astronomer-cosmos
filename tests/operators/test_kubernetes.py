@@ -267,6 +267,105 @@ def test_dbt_kubernetes_build_command_preserves_custom_cmds():
     ]
 
 
+@pytest.fixture()
+def project_dir_with_deps(tmp_path):
+    (tmp_path / "packages.yml").write_text("packages:\n  - package: dbt-labs/dbt_utils\n    version: 1.3.0\n")
+    return str(tmp_path)
+
+
+def test_dbt_kubernetes_build_command_install_deps(project_dir_with_deps):
+    """
+    When the project declares dependencies and install_deps is enabled, build_kube_args should
+    chain `dbt deps` ahead of the dbt command inside the pod using a bash -c invocation.
+    """
+    operator = DbtLSKubernetesOperator(
+        profile_config=profile_config,
+        project_dir=project_dir_with_deps,
+        conn_id="my_airflow_connection",
+        task_id="my-task",
+        image="my_image",
+    )
+    operator.build_kube_args(context=MagicMock(), cmd_flags=[])
+    assert operator.cmds == ["/bin/bash", "-c"]
+    assert operator.arguments == [
+        f"dbt deps --profile default --target dev --project-dir {project_dir_with_deps}"
+        f" && dbt ls --profile default --target dev --project-dir {project_dir_with_deps}"
+    ]
+
+
+def test_dbt_kubernetes_build_command_install_deps_with_explicit_cmds(project_dir_with_deps):
+    """
+    With cmds explicitly set to ["dbt"], the deps chain should still invoke the dbt executable
+    exactly once per command.
+    """
+    operator = DbtLSKubernetesOperator(
+        cmds=["dbt"],
+        profile_config=profile_config,
+        project_dir=project_dir_with_deps,
+        conn_id="my_airflow_connection",
+        task_id="my-task",
+        image="my_image",
+    )
+    operator.build_kube_args(context=MagicMock(), cmd_flags=[])
+    assert operator.cmds == ["/bin/bash", "-c"]
+    assert operator.arguments == [
+        f"dbt deps --profile default --target dev --project-dir {project_dir_with_deps}"
+        f" && dbt ls --profile default --target dev --project-dir {project_dir_with_deps}"
+    ]
+
+
+def test_dbt_kubernetes_build_command_install_deps_disabled(project_dir_with_deps):
+    """With install_deps=False, the command should be left untouched even if the project has deps."""
+    operator = DbtLSKubernetesOperator(
+        install_deps=False,
+        profile_config=profile_config,
+        project_dir=project_dir_with_deps,
+        conn_id="my_airflow_connection",
+        task_id="my-task",
+        image="my_image",
+    )
+    assert operator.install_deps is False
+    operator.build_kube_args(context=MagicMock(), cmd_flags=[])
+    assert operator.cmds == []
+    assert operator.arguments == [
+        "dbt",
+        "ls",
+        "--profile",
+        "default",
+        "--target",
+        "dev",
+        "--project-dir",
+        project_dir_with_deps,
+    ]
+
+
+def test_dbt_kubernetes_build_command_no_deps_without_dependencies_file():
+    """Without a dependencies file in the project, install_deps should not alter the command."""
+    operator = DbtLSKubernetesOperator(**base_kwargs)
+    assert operator.install_deps is False
+    operator.build_kube_args(context=MagicMock(), cmd_flags=MagicMock())
+    assert operator.cmds == []
+    assert operator.arguments[0] == "dbt"
+
+
+def test_dbt_kubernetes_install_deps_templated_string(project_dir_with_deps):
+    """A templated install_deps string should be preserved at init and resolved at execution time."""
+    operator = DbtLSKubernetesOperator(
+        install_deps="{{ params.install_deps }}",
+        profile_config=profile_config,
+        project_dir=project_dir_with_deps,
+        conn_id="my_airflow_connection",
+        task_id="my-task",
+        image="my_image",
+    )
+    assert operator.install_deps == "{{ params.install_deps }}"
+    # Simulate Airflow rendering the template field to a string before execution.
+    operator.install_deps = "False"
+    operator.build_kube_args(context=MagicMock(), cmd_flags=[])
+    assert operator.cmds == []
+    assert operator.arguments[0] == "dbt"
+
+
 def test_dbt_test_kubernetes_operator_constructor(kubernetes_pod_operator_callback):
     test_operator = DbtTestKubernetesOperator(on_warning_callback=(lambda *args, **kwargs: None), **base_kwargs)
     if isinstance(test_operator.callbacks, list):

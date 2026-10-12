@@ -259,6 +259,20 @@ def validate_changed_config_paths(
         )
 
 
+def _forward_install_dbt_deps_config(
+    project_config: ProjectConfig, execution_config: ExecutionConfig, operator_args: dict
+) -> None:
+    """Forward the ``install_dbt_deps`` configuration to the operators as ``install_deps``.
+
+    ``ExecutionConfig.install_dbt_deps`` overrides ``ProjectConfig.install_dbt_deps`` and the
+    deprecated ``operator_args`` value for execution only; otherwise those existing values are used.
+    """
+    if execution_config.install_dbt_deps is not None:
+        operator_args["install_deps"] = execution_config.install_dbt_deps
+    elif "install_deps" not in operator_args:
+        operator_args["install_deps"] = project_config.install_dbt_deps
+
+
 def override_configuration(
     project_config: ProjectConfig, render_config: RenderConfig, execution_config: ExecutionConfig, operator_args: dict
 ) -> None:
@@ -280,14 +294,19 @@ def override_configuration(
         operator_args["invocation_mode"] = execution_config.invocation_mode
 
     if execution_config.execution_mode in (ExecutionMode.LOCAL, ExecutionMode.VIRTUALENV, ExecutionMode.WATCHER):
-        # ExecutionConfig.install_dbt_deps overrides ProjectConfig.install_dbt_deps and the deprecated
-        # operator_args value for execution only; otherwise fall back to those existing values.
-        if execution_config.install_dbt_deps is not None:
-            operator_args["install_deps"] = execution_config.install_dbt_deps
-        elif "install_deps" not in operator_args:
-            operator_args["install_deps"] = project_config.install_dbt_deps
+        _forward_install_dbt_deps_config(project_config, execution_config, operator_args)
         if "copy_dbt_packages" not in operator_args:
             operator_args["copy_dbt_packages"] = project_config.copy_dbt_packages
+
+    if execution_config.execution_mode in (
+        ExecutionMode.KUBERNETES,
+        ExecutionMode.GCP_GKE,
+        ExecutionMode.WATCHER_KUBERNETES,
+        ExecutionMode.WATCHER_GCP_GKE,
+    ):
+        # The pod-based operators run `dbt deps` inside the pod when `install_deps` is enabled;
+        # forward the same configuration used by the local execution modes.
+        _forward_install_dbt_deps_config(project_config, execution_config, operator_args)
 
 
 class DbtToAirflowConverter:
